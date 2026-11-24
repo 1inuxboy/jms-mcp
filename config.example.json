@@ -1,0 +1,18 @@
+{
+  "koko": {
+    "host": "jumpserver.example.com",
+    "port": 2222,
+    "hostKeySha256": "SHA256:<替换为已核实的 KoKo 主机公钥指纹>"
+  },
+  "user": "<你的 JumpServer 用户名>",
+  "ttlHours": 24,
+  "assets": {
+    "demo-server": {
+      "accounts": ["ops", "admin"],
+      "defaultAccount": "ops",
+      "privilegedAccounts": ["admin"],
+      "expectHostname": "demo-server",
+      "description": "示例服务器"
+    }
+  }
+}

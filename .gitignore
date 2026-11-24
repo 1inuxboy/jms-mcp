@@ -1,0 +1,9 @@
+node_modules/
+.jms-mcp/
+config.json
+broker.token
+broker.log
+broker.sock
+.env
+.env.*
+!.env.example
