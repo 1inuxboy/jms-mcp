@@ -3,6 +3,7 @@
 // 另外每个请求都要带 broker 启动时生成、只写在用户目录里的随机令牌。
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import { chmodSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { connect } from 'node:net';
@@ -66,8 +67,9 @@ export function buildId(configPath) {
 /** 逐行 JSON 解析器 */
 export function lineReader(onMessage) {
   let buf = '';
+  const decoder = new StringDecoder('utf8'); // 多字节字符可能被切在两个数据块之间，必须流式解码
   return (chunk) => {
-    buf += chunk.toString('utf8');
+    buf += typeof chunk === 'string' ? chunk : decoder.write(chunk);
     let i;
     while ((i = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, i);

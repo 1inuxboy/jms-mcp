@@ -16,6 +16,8 @@ const OUTPUT_LIMIT = 256 * 1024;
 const KOKO_READY_TIMEOUT_MS = 25_000;
 /** 超时发出 KILL/close 后，再等多久仍无 close 事件就直接返回，避免调用永久挂起 */
 const KILL_GRACE_MS = 5_000;
+/** 等 KoKo 确认执行通道的上限（再长也不会成功） */
+const OPEN_CHANNEL_TIMEOUT_MS = 30_000;
 const LOGIN_KEY = 'login';
 
 export function sha256Fingerprint(keyBuffer) {
@@ -85,7 +87,15 @@ export function failureMessage(e) {
  */
 export function execOnce(client, command, timeoutMs, killGraceMs = KILL_GRACE_MS) {
   return new Promise((resolve, reject) => {
+    // KoKo 已连接但迟迟不确认通道时，不能一直等
+    let abandoned = false;
+    const openTimer = setTimeout(() => {
+      abandoned = true;
+      reject(new Error(`打开执行通道超时（${Math.round(Math.min(timeoutMs, OPEN_CHANNEL_TIMEOUT_MS) / 1000)}s 内 KoKo 未确认）`));
+    }, Math.min(timeoutMs, OPEN_CHANNEL_TIMEOUT_MS));
     client.exec(command, (err, stream) => {
+      clearTimeout(openTimer);
+      if (abandoned) { try { stream?.close(); } catch { /* 已关闭 */ } return; }
       if (err) { reject(new Error(`打开执行通道失败: ${err.message}`)); return; }
       // 按字节收集，结束时一次性解码，避免多字节字符被分块截断成乱码
       const out = { stdout: [], stderr: [], bytes: 0 };
@@ -156,6 +166,8 @@ export class SessionPool {
     this.assetCache = new Map();
     /** 手动注销的代数：登录开始后发生过注销，该次登录的结果作废 */
     this.logoutEpoch = 0;
+    /** 登录态或资产缓存每失效一次加一；依赖它的校验结果（如主机名核对）随之作废 */
+    this.generation = 0;
   }
 
   /** 取有效登录态；没有或已过期则弹窗登录（密码 + OTP）。并发调用共用同一次登录。 */
@@ -319,7 +331,7 @@ export class SessionPool {
         client = await this.#openKoko(conn);
       } catch (e) {
         if (e.code === 'unauthorized' && !relogged) { relogged = true; this.close(LOGIN_KEY, '登录态已失效'); continue; }
-        if (e.code === 'perm_account_invalid' && !refreshed) { refreshed = true; this.assetCache.delete(asset.name); continue; }
+        if (e.code === 'perm_account_invalid' && !refreshed) { refreshed = true; this.assetCache.delete(asset.name); this.generation++; continue; }
         throw e;
       }
       try {
@@ -338,6 +350,7 @@ export class SessionPool {
     clearTimeout(entry.timer);
     this.sessions.delete(key);
     this.assetCache.clear();
+    this.generation++;
     this.log(`登录态已结束 ${entry.user}: ${reason}`);
     return true;
   }

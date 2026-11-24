@@ -114,6 +114,7 @@ export class FakeClient extends EventEmitter {
     this.execs.push(cmd);
     const out = this.behavior.exec?.(cmd);
     if (out === 'openfail') { cb(new Error('No response from server')); return; }
+    if (out === 'noopen') return; // 永远不回调，模拟 KoKo 不确认通道
     const stream = new EventEmitter();
     stream.stderr = new EventEmitter();
     stream.closed = false;

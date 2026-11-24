@@ -25,8 +25,9 @@ export class JmsService {
   constructor(config, pool = new SessionPool(config)) {
     this.config = config;
     this.pool = pool;
-    /** 已核对过主机名的（资产, 账号）；注销后清空 */
+    /** 已核对过主机名的（资产, 账号）；登录态或资产缓存失效（pool.generation 变化）后作废 */
     this.verified = new Set();
+    this.verifiedGeneration = 0;
   }
 
   list() {
@@ -46,13 +47,18 @@ export class JmsService {
 
   /** 每个（资产, 账号）首次使用前核对主机名，防止资产配错时在别的机器上执行。 */
   async #verifyHostname(asset, account, timeoutMs) {
+    if (!asset.expectHostname) return;
+    // 先确保登录态有效：已过期时在这里重新登录，generation 才反映当前登录
+    await this.pool.ensureLogin({ asset: asset.name, account, privileged: asset.privilegedAccounts.includes(account) });
     const key = `${asset.name}|${account}`;
-    if (!asset.expectHostname || this.verified.has(key)) return;
+    if (this.verifiedGeneration !== this.pool.generation) { this.verified.clear(); this.verifiedGeneration = this.pool.generation; }
+    if (this.verified.has(key)) return;
     const r = await this.pool.run(asset, account, 'hostname', Math.min(timeoutMs, 15_000));
     const got = r.stdout.trim().split('.')[0];
     if (r.exitCode !== 0 || got !== asset.expectHostname) {
       throw new Error(`主机名核对失败：期望 ${asset.expectHostname}，实际 ${got || '(空)'}，未执行命令`);
     }
+    if (this.verifiedGeneration !== this.pool.generation) { this.verified.clear(); this.verifiedGeneration = this.pool.generation; } // 核对期间重新登录过：只认新登录下的结果
     this.verified.add(key);
   }
 

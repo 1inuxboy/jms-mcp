@@ -589,3 +589,37 @@ test('普通账号名撞到特权账号：拒绝，不申请令牌', async () =>
   assert.equal(api.tokens.length, 0);
   pool.closeAll();
 });
+
+// ---------- P2 ----------
+test('IPC 逐行解析：多字节中文被切在两个数据块之间也不损坏', async () => {
+  const { lineReader } = await import('../src/ipc.js');
+  const got = [];
+  const feed = lineReader((l) => got.push(l));
+  const b = Buffer.from(`${JSON.stringify({ s: '中文命令' })}\n`);
+  feed(b.subarray(0, 7)); // 切在“中”的中间
+  feed(b.subarray(7, 11));
+  feed(b.subarray(11));
+  assert.deepEqual(got.map((l) => JSON.parse(l)), [{ s: '中文命令' }]);
+});
+
+test('登录过期后重新登录，主机名重新核对', async () => {
+  const { JmsService } = await import('../src/service.js');
+  let now = 1_000_000;
+  const { pool, config, allExecs } = makePool({}, { now: () => now });
+  const svc = new JmsService(config, pool);
+  await svc.exec({ asset: 'web-1', command: 'id' });
+  await svc.exec({ asset: 'web-1', command: 'id' });
+  assert.equal(allExecs().filter((c) => c === 'hostname').length, 1); // 同一登录态内只核对一次
+  now += config.ttlMs + 1;
+  await svc.exec({ asset: 'web-1', command: 'id' });
+  assert.equal(allExecs().filter((c) => c === 'hostname').length, 2);
+  pool.closeAll();
+});
+
+test('KoKo 不确认执行通道时，到时报错而不是一直等', async () => {
+  const { pool, config } = makePool({ exec: () => 'noopen' });
+  const t0 = Date.now();
+  await assert.rejects(pool.run(config.assets['web-1'], 'ops', 'id', 50), /打开执行通道超时/);
+  assert.ok(Date.now() - t0 < 2000);
+  pool.closeAll();
+});

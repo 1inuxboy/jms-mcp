@@ -145,7 +145,7 @@ async function alertMac({ mode, title, headline, detail, okLabel, isError, place
     const out = JSON.parse(r.stdout.trim());
     diag(`弹窗(${mode})返回 ${out.ok ? '已确认' : '已取消'} ${out.ok ? (out.text ? '内容非空' : '内容为空') : ''} 耗时=${ms}ms`); // 只记结果类别，不记内容
     return out;
-  } catch { diag(`弹窗(${mode})输出无法解析 耗时=${ms}ms`); return { failed: true, reason: `无法解析弹窗输出: ${r.stdout.slice(0, 100)}` }; }
+  } catch { diag(`弹窗(${mode})输出无法解析 耗时=${ms}ms`); return { failed: true, reason: '无法解析弹窗输出' }; }
 }
 
 /** macOS 兜底：系统自带 display dialog，样式朴素但一定可用。 */

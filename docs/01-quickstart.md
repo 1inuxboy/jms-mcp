@@ -22,7 +22,7 @@
 cd /path/to/jms-mcp
 npm ci
 mkdir -p ~/.jms-mcp
-cp config.example.json ~/.jms-mcp/config.json
+cp -n config.example.json ~/.jms-mcp/config.json   # -n：已有配置时不覆盖
 ```
 
 ## 3. 改成自己的配置
