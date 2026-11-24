@@ -623,3 +623,28 @@ test('KoKo 不确认执行通道时，到时报错而不是一直等', async () 
   assert.ok(Date.now() - t0 < 2000);
   pool.closeAll();
 });
+
+test('登录期内新增授权账号：缓存未命中时自动重拉一次账号列表，仍无则只查两次报错', async () => {
+  const raw = structuredClone(RAW);
+  raw.assets['web-1'].accounts = ['ops', 'readonly', 'admin'];
+  const { pool, config, api } = makePool({}, {}, raw);
+  let calls = 0;
+  api.assetAccounts = async () => {
+    calls++;
+    if (calls === 1) return [{ alias: 'alias-ops', name: 'ops', username: 'ops' }];
+    return [
+      { alias: 'alias-ops', name: 'ops', username: 'ops' },
+      { alias: 'alias-ro', name: 'readonly', username: 'readonly' },
+    ];
+  };
+  await pool.run(config.assets['web-1'], 'ops', 'id', 1000);
+  assert.equal(calls, 1);
+  // 期间服务端新增了 readonly 授权，缓存未命中应自动重拉一次并成功
+  const r = await pool.run(config.assets['web-1'], 'readonly', 'id', 1000);
+  assert.equal(r.exitCode, 0);
+  assert.equal(calls, 2);
+  // 请求确实未授权的 admin 时：重拉一次仍无，报错且不死循环
+  await assert.rejects(pool.run(config.assets['web-1'], 'admin', 'id', 1000), /没有授权给你的账号 admin/);
+  assert.equal(calls, 3);
+  pool.closeAll();
+});

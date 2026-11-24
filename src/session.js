@@ -249,13 +249,27 @@ export class SessionPool {
   /** 资产名 → { assetId, alias }：alias 是申请连接令牌时 account 要用的账号别名。 */
   async #resolve(login, asset, account) {
     let c = this.assetCache.get(asset.name);
+    let fresh = false;
     if (!c) {
       const id = asset.id ?? await this.api.findAssetId(login.token, asset.name);
       if (!id) throw new Error(`JumpServer 里没有授权给你的资产 ${asset.name}`);
       c = { id, accounts: await this.api.assetAccounts(login.token, id) };
       this.assetCache.set(asset.name, c);
+      fresh = true;
     }
-    const matches = c.accounts.filter((x) => x.username === account || x.name === account);
+    let matches = c.accounts.filter((x) => x.username === account || x.name === account);
+    if (!matches.length && !fresh) {
+      const id = asset.id ?? await this.api.findAssetId(login.token, asset.name);
+      if (!id) {
+        this.assetCache.delete(asset.name);
+        this.generation++;
+        throw new Error(`JumpServer 里没有授权给你的资产 ${asset.name}`);
+      }
+      c = { id, accounts: await this.api.assetAccounts(login.token, id) };
+      this.assetCache.set(asset.name, c);
+      this.generation++;
+      matches = c.accounts.filter((x) => x.username === account || x.name === account);
+    }
     if (matches.length > 1) {
       throw new Error(`资产 ${asset.name} 上账号 ${account} 匹配到多个授权账号（${matches.map((x) => `${x.name}/${x.username}`).join(', ')}），已拒绝；请在 JumpServer 里消除重名`);
     }
