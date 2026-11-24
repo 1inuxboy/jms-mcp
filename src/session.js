@@ -72,7 +72,7 @@ export function loginDescription(o) {
 export function failureMessage(e) {
   if (e.code === 'password_failed') {
     const left = e.remaining != null ? `，还剩 ${e.remaining} 次机会` : '';
-    return `密码不正确${left}。请确认密码后再让 AI 重试。连续输错可能触发账号锁定，锁定时间取决于服务端策略。`;
+    return `密码不正确${left}。请确认密码后再让 AI 重试；连续输错会被 JumpServer 锁定账号 30 分钟。`;
   }
   if (/^MFA 验证失败/.test(e.message)) return '动态码验证失败。请等验证器刷新出新的动态码后，再让 AI 重试。';
   if (e.code === 'network') return '无法连接 JumpServer。请检查网络连接，并确认本机可以访问配置的 JumpServer 地址。';
@@ -154,6 +154,8 @@ export class SessionPool {
     this.pending = new Map();
     /** 资产名 → { id, accounts: [{alias, name, username}] }，登录态失效时清空 */
     this.assetCache = new Map();
+    /** 手动注销的代数：登录开始后发生过注销，该次登录的结果作废 */
+    this.logoutEpoch = 0;
   }
 
   /** 取有效登录态；没有或已过期则弹窗登录（密码 + OTP）。并发调用共用同一次登录。 */
@@ -162,7 +164,7 @@ export class SessionPool {
     if (cur && this.now() < cur.expiresAt) return cur;
     if (cur) this.close(LOGIN_KEY, '已到有效期');
     if (!this.pending.has(LOGIN_KEY)) {
-      const p = this.#login(context).finally(() => this.pending.delete(LOGIN_KEY));
+      const p = this.#login(context).finally(() => { if (this.pending.get(LOGIN_KEY) === p) this.pending.delete(LOGIN_KEY); });
       this.pending.set(LOGIN_KEY, p);
     }
     return this.pending.get(LOGIN_KEY);
@@ -174,9 +176,13 @@ export class SessionPool {
    * @param {{asset: string, account: string, privileged?: boolean}|null} context 是谁触发的登录，写进弹窗
    */
   async #login(context) {
-    const { user, koko, ttlMs, pinentryPath } = this.config;
+    const { user, ttlMs, pinentryPath } = this.config;
+    const epoch = this.logoutEpoch;
+    const assertNotLoggedOut = () => { if (epoch !== this.logoutEpoch) throw new Error('登录期间已执行注销，本次登录已作废'); };
     const title = `JumpServer 登录 - ${user}`;
-    const dialog = (step, error) => ({ ...loginDialog({ user, host: koko.host, ttlMs, step, context }), error, description: loginDescription({ user, host: koko.host, ttlMs, step, context, error }) });
+    // 弹窗显示实际接收密码和动态码的 API 地址
+    const host = new URL(this.config.jumpserver.baseUrl).host;
+    const dialog = (step, error) => ({ ...loginDialog({ user, host, ttlMs, step, context }), error, description: loginDescription({ user, host, ttlMs, step, context, error }) });
     /** 弹窗超时时通知用户（窗口已消失，不能让人一头雾水），并给 AI 一个明确的原因 */
     const ask = async (fn, what, seconds) => {
       try {
@@ -200,6 +206,7 @@ export class SessionPool {
       this.log(`等待人工输入密码: ${user}`);
       const password = await ask(() => this.passwordPrompt({ title, ...dialog('password', error), okLabel: '登录', timeoutSec: PASSWORD_PROMPT_SEC, pinentryPath }), '密码', PASSWORD_PROMPT_SEC);
       if (!password) throw new Error('未输入密码（已取消），登录未进行');
+      assertNotLoggedOut(); // 等待输入期间已注销：不再提交密码
       try {
         res = await this.api.login(user, password, getOtp); // 密码只在这一次调用里使用，之后不再保留
         break;
@@ -214,6 +221,7 @@ export class SessionPool {
       }
     }
 
+    assertNotLoggedOut(); // 等待 MFA 或认证响应期间已注销：丢弃结果，不写入共享登录态
     const readyAt = this.now();
     const expiresAt = Math.min(readyAt + ttlMs, res.expiresAt ?? Infinity);
     const entry = { token: res.token, user, readyAt, expiresAt, timer: null };
@@ -235,7 +243,16 @@ export class SessionPool {
       c = { id, accounts: await this.api.assetAccounts(login.token, id) };
       this.assetCache.set(asset.name, c);
     }
-    const a = c.accounts.find((x) => x.username === account || x.name === account);
+    const matches = c.accounts.filter((x) => x.username === account || x.name === account);
+    if (matches.length > 1) {
+      throw new Error(`资产 ${asset.name} 上账号 ${account} 匹配到多个授权账号（${matches.map((x) => `${x.name}/${x.username}`).join(', ')}），已拒绝；请在 JumpServer 里消除重名`);
+    }
+    const a = matches[0];
+    // 最终选中的账号若是特权账号，而请求的名字不是配置里的特权账号，说明名字撞了：拒绝
+    const priv = asset.privilegedAccounts;
+    if (a && (priv.includes(a.username) || priv.includes(a.name)) && !priv.includes(account)) {
+      throw new Error(`资产 ${asset.name} 上账号 ${account} 实际对应特权账号 ${a.name}/${a.username}，已拒绝；请在 JumpServer 里消除重名`);
+    }
     if (!a) throw new Error(`资产 ${asset.name} 上没有授权给你的账号 ${account}，已授权: ${c.accounts.map((x) => x.username).join(', ') || '无'}`);
     return { assetId: c.id, alias: a.alias };
   }
@@ -326,6 +343,8 @@ export class SessionPool {
   }
 
   closeAll(reason) {
+    this.logoutEpoch++; // 使进行中的登录作废；后续调用另起一次登录
+    this.pending.delete(LOGIN_KEY);
     return [...this.sessions.keys()].filter((k) => this.close(k, reason)).length;
   }
 

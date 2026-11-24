@@ -28,7 +28,8 @@ export function normalizeConfig(raw) {
   if (!raw?.user || !NAME_RE.test(raw.user)) errors.push('user 必填，且只能含字母数字和 ._-');
 
   const baseUrl = String(raw?.jumpserver?.baseUrl ?? `https://${koko.host}`).replace(/\/+$/, '');
-  if (!/^https?:\/\/[^/\s]+$/.test(baseUrl)) errors.push('jumpserver.baseUrl 必须形如 https://host[:port]');
+  // 密码和 MFA 动态码经此地址提交，只允许 HTTPS，不接受明文 HTTP
+  if (!/^https:\/\/[^/\s]+$/.test(baseUrl)) errors.push('jumpserver.baseUrl 必须形如 https://host[:port]（只允许 HTTPS）');
 
   // 登录态的本地上限；实际有效期取它与 JumpServer 返回的过期时间中较早者
   const ttlHours = raw?.ttlHours ?? 24;

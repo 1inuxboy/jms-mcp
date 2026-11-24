@@ -35,6 +35,12 @@ test('配置：jumpserver.baseUrl 可覆盖，格式不对报错', () => {
   assert.throws(() => normalizeConfig(bad), /baseUrl/);
 });
 
+test('配置：jumpserver.baseUrl 拒绝明文 HTTP（密码和动态码经此提交）', () => {
+  const bad = structuredClone(RAW);
+  bad.jumpserver = { baseUrl: 'http://js.example.com' };
+  assert.throws(() => normalizeConfig(bad), /HTTPS/);
+});
+
 test('配置校验：默认账号是特权账号报错', () => {
   const bad = structuredClone(RAW);
   bad.assets['web-1'].defaultAccount = 'admin';
@@ -408,7 +414,7 @@ test('密码输错且剩余次数不足：不再让用户当场重输，弹出�
   assert.equal(shown.errors.length, 1);
   assert.equal(shown.errors[0].title, 'JumpServer 登录失败 - alice');
   assert.match(shown.errors[0].message, /密码不正确，还剩 2 次机会/);
-  assert.match(shown.errors[0].message, /账号锁定/);
+  assert.match(shown.errors[0].message, /锁定账号 30 分钟/);
   assert.equal(pool.sessions.size, 0);
 });
 
@@ -518,4 +524,68 @@ test('弹窗整段文字：错误提示置顶，标题与说明依次排开', as
   const e = new PromptTimeoutError(300);
   assert.equal(e.code, 'prompt_timeout');
   assert.match(e.message, /5 分钟/);
+});
+
+// ---------- 注销与在途登录 ----------
+const gate = () => { let open; const p = new Promise((r) => { open = r; }); return { p, open }; };
+
+test('注销发生在等待密码期间：不再提交密码，登录作废，不写入登录态', async () => {
+  const g = gate();
+  const { pool, config, api } = makePool({}, { passwordPrompt: async () => { await g.p; return 'pw-secret-1'; } });
+  const run = pool.run(config.assets['web-1'], 'ops', 'id', 1000);
+  await new Promise((r) => setImmediate(r));
+  pool.closeAll('手动注销');
+  g.open();
+  await assert.rejects(run, /已执行注销/);
+  assert.equal(api.logins, 0);
+  assert.equal(pool.sessions.size, 0);
+});
+
+test('注销发生在等待动态码期间：认证结果被丢弃，登录态不被写入', async () => {
+  const g = gate();
+  const { pool, config, api } = makePool({}, { otpPrompt: async () => { await g.p; return '123456'; } });
+  const run = pool.run(config.assets['web-1'], 'ops', 'id', 1000);
+  await new Promise((r) => setImmediate(r));
+  pool.closeAll('手动注销');
+  g.open();
+  await assert.rejects(run, /已执行注销/);
+  assert.equal(api.logins, 1);
+  assert.equal(pool.sessions.size, 0);
+  assert.equal(pool.pending.size, 0);
+});
+
+test('注销之后的新调用另起一次登录，不复用已作废的登录', async () => {
+  const g = gate();
+  let n = 0;
+  const { pool, config, api } = makePool({}, { passwordPrompt: async () => { if (++n === 1) await g.p; return 'pw-secret-1'; } });
+  const first = pool.run(config.assets['web-1'], 'ops', 'id', 1000);
+  await new Promise((r) => setImmediate(r));
+  pool.closeAll('手动注销');
+  const second = await pool.run(config.assets['web-1'], 'ops', 'id', 1000);
+  assert.equal(second.exitCode, 0);
+  g.open();
+  await assert.rejects(first, /已执行注销/);
+  assert.equal(api.logins, 1);
+  assert.equal(pool.sessions.size, 1); // 第二次登录的登录态没有被第一次的收尾清掉
+  pool.closeAll();
+});
+
+// ---------- 账号重名 ----------
+test('账号名同时匹配多个授权账号：拒绝，不取第一个', async () => {
+  const { pool, config, api } = makePool();
+  api.assetAccounts = async () => [
+    { alias: 'alias-1', name: 'ops', username: 'x1' },
+    { alias: 'alias-2', name: 'y', username: 'ops' },
+  ];
+  await assert.rejects(pool.run(config.assets['web-1'], 'ops', 'id', 1000), /匹配到多个授权账号/);
+  assert.equal(api.tokens.length, 0);
+  pool.closeAll();
+});
+
+test('普通账号名撞到特权账号：拒绝，不申请令牌', async () => {
+  const { pool, config, api } = makePool();
+  api.assetAccounts = async () => [{ alias: 'alias-admin', name: 'ops', username: 'admin' }];
+  await assert.rejects(pool.run(config.assets['web-1'], 'ops', 'id', 1000), /实际对应特权账号/);
+  assert.equal(api.tokens.length, 0);
+  pool.closeAll();
 });

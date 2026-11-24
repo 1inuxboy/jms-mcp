@@ -42,7 +42,9 @@ export function brokerBackend({ cfgPath = configPath(), ensure = ensureBroker, c
       return hello.stale ? { ...r, warning: 'broker 运行的是旧代码或旧配置；当前没有登录态（或执行 jms_logout）后会自动换新' } : r;
     },
     exec: async (args) => {
-      await ready();
+      const hello = await ready();
+      // broker 指纹与当前代码/配置不符且仍有登录态：命令可能发往旧配置的环境，拒绝执行
+      if (hello.stale) throw new Error('broker 运行的是旧代码或旧配置，且仍有登录态；为避免命令发往错误环境，已拒绝执行。请先执行 jms_logout，再重试');
       return call('exec', args, { timeoutMs: (args.timeout_sec ?? DEFAULT_TIMEOUT_SEC) * 1000 + LOGIN_BUDGET_MS });
     },
     logout: async () => { await ready(); return call('logout', {}); },

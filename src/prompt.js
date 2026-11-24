@@ -127,16 +127,25 @@ function run(argv) {
   alert.window.setLevel(3);
   app.activateIgnoringOtherApps(true);
   var resp = alert.runModal;
-  if (resp !== 1000) return JSON.stringify({ ok: false });
+  if (Number(resp) !== 1000) return JSON.stringify({ ok: false });
   return JSON.stringify({ ok: true, text: field ? ObjC.unwrap(field.stringValue) : '' });
 }`;
 
+/** 弹窗结果诊断，写到 stderr（broker 会落到 broker.log）；只写结果类别与耗时，不含任何输入内容。 */
+const diag = (m) => process.stderr.write(`${new Date().toISOString()} [prompt] ${m}\n`);
+
 /** macOS：AppKit 弹窗。返回 { ok, text } 或 { failed: true }（脚本本身出错，调用方可退回兜底样式）。 */
 async function alertMac({ mode, title, headline, detail, okLabel, isError, placeholder, timeoutSec }) {
+  const t0 = Date.now();
   const r = await run('/usr/bin/osascript', ['-l', 'JavaScript', '-e', JXA_ALERT, mode, title, headline, detail, okLabel, isError ? '1' : '0', placeholder ?? ''], { timeoutMs: timeoutSec * 1000 });
-  if (r.killed) throw new PromptTimeoutError(timeoutSec);
-  if (!r.ok) return { failed: true, reason: r.stderr.trim().slice(0, 300) };
-  try { return JSON.parse(r.stdout.trim()); } catch { return { failed: true, reason: `无法解析弹窗输出: ${r.stdout.slice(0, 100)}` }; }
+  const ms = Date.now() - t0;
+  if (r.killed) { diag(`弹窗(${mode})超时 耗时=${ms}ms`); throw new PromptTimeoutError(timeoutSec); }
+  if (!r.ok) { diag(`弹窗(${mode})脚本失败 耗时=${ms}ms 原因=${r.stderr.trim().slice(0, 200)}`); return { failed: true, reason: r.stderr.trim().slice(0, 300) }; }
+  try {
+    const out = JSON.parse(r.stdout.trim());
+    diag(`弹窗(${mode})返回 ${out.ok ? '已确认' : '已取消'} ${out.ok ? (out.text ? '内容非空' : '内容为空') : ''} 耗时=${ms}ms`); // 只记结果类别，不记内容
+    return out;
+  } catch { diag(`弹窗(${mode})输出无法解析 耗时=${ms}ms`); return { failed: true, reason: `无法解析弹窗输出: ${r.stdout.slice(0, 100)}` }; }
 }
 
 /** macOS 兜底：系统自带 display dialog，样式朴素但一定可用。 */

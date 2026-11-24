@@ -91,6 +91,18 @@ test('MCP 后端：broker 跑旧代码且有登录态时提示 stale', async () 
   });
   const r = await backend.list();
   assert.match(r.warning, /旧代码或旧配置/);
+  // stale 时 exec 必须拒绝：命令可能发往旧配置的环境，且不能调用 broker
+  await assert.rejects(backend.exec({ asset: 'web-1', command: 'id', timeout_sec: 10 }), /旧代码或旧配置/);
+  assert.equal(calls.length, 1);
+});
+
+test('MCP 后端：broker 指纹一致时 exec 正常转发并带登录预算', async () => {
+  const calls = [];
+  const backend = brokerBackend({
+    cfgPath: '/nonexistent',
+    ensure: async () => ({ buildId: 'x' }),
+    call: async (op, args, opts) => { calls.push({ op, opts }); return {}; },
+  });
   await backend.exec({ asset: 'web-1', command: 'id', timeout_sec: 10 });
-  assert.equal(calls[1].opts.timeoutMs, 10_000 + LOGIN_BUDGET_MS);
+  assert.equal(calls[0].opts.timeoutMs, 10_000 + LOGIN_BUDGET_MS);
 });
